@@ -1,0 +1,137 @@
+name: CI/CD Pipeline for RealWorld App
+
+# This pipeline triggers on pushes (like merges) to these specific branches
+on:
+  push:
+    branches:
+      - main
+      - 'pre-release/v*'
+      - 'release/v*'
+
+env:
+  # Set your Docker Hub username here
+  IMAGE_REGISTRY: your-dockerhub-username
+  IMAGE_NAME_BACKEND: realworld-backend
+  IMAGE_NAME_FRONTEND: realworld-frontend
+
+jobs:
+  # ==================================
+  # Job 1: Build and Run Unit Tests
+  # ==================================
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+
+      - name: Cache npm dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run tests
+        run: npm test
+
+  # ===============================================
+  # Job 2: Build Docker Images and Push to Registry
+  # ===============================================
+  build-and-push-images:
+    runs-on: ubuntu-latest
+    needs: build-and-test # This job only runs if build-and-test succeeds
+    outputs:
+      # This output will be used by the deploy job
+      image_tag: ${{ steps.generate_tag.outputs.tag }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Generate image tag
+        id: generate_tag
+        run: |
+          # Sanitize branch name (replace / with -) and get short SHA
+          BRANCH_NAME=$(echo ${{ github.ref_name }} | sed 's/\//-/g')
+          SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
+          TAG="${BRANCH_NAME}-${SHORT_SHA}"
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push Backend image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ./backend/Dockerfile
+          push: true
+          tags: ${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME_BACKEND }}:${{ steps.generate_tag.outputs.tag }}
+
+      - name: Build and push Frontend image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ./frontend/Dockerfile
+          push: true
+          tags: ${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME_FRONTEND }}:${{ steps.generate_tag.outputs.tag }}
+
+  # =======================================
+  # Job 3: Deploy to Kubernetes Environment
+  # =======================================
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build-and-push-images # This job only runs if build-and-push succeeds
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set Kubernetes context
+        uses: azure/k8s-set-context@v3
+        with:
+          method: kubeconfig
+          kubeconfig: ${{ secrets.KUBECONFIG_BASE64 }}
+
+      - name: Determine Environment and Namespace
+        id: get_env
+        run: |
+          if [[ "${{ github.ref_name }}" == "main" ]]; then
+            echo "namespace=dev" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref_name }}" == pre-release* ]]; then
+            echo "namespace=pre-release" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref_name }}" == release* ]]; then
+            echo "namespace=release" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Deploy to Kubernetes using Kustomize
+        run: |
+          IMAGE_TAG=${{ needs.build-and-push-images.outputs.image_tag }}
+          NAMESPACE=${{ steps.get_env.outputs.namespace }}
+          
+          echo "Deploying tag ${IMAGE_TAG} to namespace ${NAMESPACE}"
+          
+          cd kubernetes/
+          
+          # Use Kustomize to set the new image tags
+          kustomize edit set image realworld-backend=${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME_BACKEND }}:${IMAGE_TAG}
+          kustomize edit set image realworld-frontend=${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME_FRONTEND }}:${IMAGE_TAG}
+          
+          # Apply the manifests to the correct namespace
+          kustomize build | kubectl apply -n ${NAMESPACE} -f -
+
+      - name: Verify deployment rollout
+        run: |
+          NAMESPACE=${{ steps.get_env.outputs.namespace }}
+          kubectl rollout status deployment/backend-deployment -n ${NAMESPACE} --timeout=60s
+          kubectl rollout status deployment/frontend-deployment -n ${NAMESPACE} --timeout=60s
