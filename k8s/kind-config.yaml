@@ -1,0 +1,9 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+- role: control-plane
+  extraPortMappings:
+  # This maps port 32348 on your localhost to port 32348 on the kind "Node" container
+  - containerPort: 32348
+    hostPort: 32348
+    protocol: TCP

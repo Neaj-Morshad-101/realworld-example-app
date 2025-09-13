@@ -1,0 +1,29 @@
+# kubernetes/ingress.yaml (or 03-frontend.yaml)
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: realworld-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          # Rule for the API
+          - path: /api(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: backend # Using your service name
+                port:
+                  number: 3001
+          # Rule for the Frontend
+          - path: /()(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: frontend-svc
+                port:
+                  number: 80
