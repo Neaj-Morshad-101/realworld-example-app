@@ -10,7 +10,7 @@ on:
 
 env:
   # Set your Docker Hub username here
-  IMAGE_REGISTRY: your-dockerhub-username
+  IMAGE_REGISTRY: ${{ vars.IMAGE_REGISTRY }}
   IMAGE_NAME_BACKEND: realworld-backend
   IMAGE_NAME_FRONTEND: realworld-frontend
 
